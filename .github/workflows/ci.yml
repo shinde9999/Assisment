@@ -1,0 +1,159 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+defaults:
+  run:
+    working-directory: ./surpluss-catalogue-qa
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Lint & Static Typecheck (BLOCKS MERGE on failure)
+  # ---------------------------------------------------------------------------
+  quality-gate:
+    name: Code Quality & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: ./surpluss-catalogue-qa/package-lock.json
+      - name: Install Dependencies
+        run: npm ci
+      - name: Generate Prisma Client
+        run: npm run db:generate
+      - name: Run Typecheck
+        run: npm run typecheck
+      - name: Run Linter
+        run: npm run lint
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Unit, Integration & API Access Control Tests (BLOCKS MERGE on failure)
+  # ---------------------------------------------------------------------------
+  test-suite:
+    name: Unit, Integration & API Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: catalogue
+          POSTGRES_PASSWORD: catalogue
+          POSTGRES_DB: catalogue
+        ports:
+          - 5544:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: ./surpluss-catalogue-qa/package-lock.json
+      - name: Install Dependencies
+        run: npm ci
+      - name: Deploy Database Migrations
+        env:
+          DATABASE_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+          DIRECT_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+        run: npm run db:deploy
+      - name: Seed Database
+        env:
+          DATABASE_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+          DIRECT_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+        run: npm run db:seed
+      - name: Run Core Test Suite (Unit, Integration, API)
+        env:
+          DATABASE_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+          DIRECT_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+          AUTH_SECRET: ci-secret-key-32-characters-minimum-for-jwt
+          NEXTAUTH_URL: http://localhost:3001
+        run: npm run test
+
+  # ---------------------------------------------------------------------------
+  # Job 3: End-to-End Buyer Journey (BLOCKS MERGE on failure)
+  # ---------------------------------------------------------------------------
+  e2e-journey:
+    name: Playwright E2E Buyer Journey
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: catalogue
+          POSTGRES_PASSWORD: catalogue
+          POSTGRES_DB: catalogue
+        ports:
+          - 5544:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: ./surpluss-catalogue-qa/package-lock.json
+      - name: Install Dependencies
+        run: npm ci
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
+      - name: Deploy & Seed Database
+        env:
+          DATABASE_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+          DIRECT_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+        run: |
+          npm run db:deploy
+          npm run db:seed
+      - name: Run Playwright E2E Tests
+        env:
+          DATABASE_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+          DIRECT_URL: postgresql://catalogue:catalogue@localhost:5544/catalogue
+          AUTH_SECRET: ci-secret-key-32-characters-minimum-for-jwt
+          NEXTAUTH_URL: http://localhost:3001
+        run: npm run test:e2e
+      - name: Upload Test Artifacts on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: ./surpluss-catalogue-qa/playwright-report/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Job 4: Known Bug Regressions / Findings Tracking (WARNS ONLY, DOES NOT BLOCK)
+  # ---------------------------------------------------------------------------
+  findings-tracker:
+    name: Known Bug Reproduction Tests (Advisory / Non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true # Non-blocking warning only until issues are patched
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: ./surpluss-catalogue-qa/package-lock.json
+      - name: Install Dependencies
+        run: npm ci
+      - name: Run Known Bug Tests
+        run: npm run test:findings || echo "Documented bugs still open (expected on unpatched build)"

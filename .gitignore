@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Local PostgreSQL Cluster Data & Logs
+pgdata_5544/
+*.log
+
+# Environment variables
+.env
+.env.local
+.env*.local
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
